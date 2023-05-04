@@ -18,6 +18,7 @@
 package logp
 
 import (
+	"bytes"
 	"fmt"
 
 	"go.uber.org/zap"
@@ -44,7 +45,7 @@ func newLogger(rootLogger *zap.Logger, selector string, options ...LogOption) *L
 // NewLogger returns a new Logger labeled with the name of the selector. This
 // should never be used from any global contexts, otherwise you will receive a
 // no-op Logger. This is because the logp package needs to be initialized first.
-// Instead create new Logger instance that your object reuses. Or if you need to
+// Instead, create new Logger instance that your object reuses. Or if you need to
 // log from a static context then you may use logp.L().Infow(), for example.
 func NewLogger(selector string, options ...LogOption) *Logger {
 	return newLogger(loadLogger().rootLogger, selector, options...)
@@ -54,6 +55,17 @@ func NewLogger(selector string, options ...LogOption) *Logger {
 func (l *Logger) WithOptions(options ...LogOption) *Logger {
 	cloned := l.logger.WithOptions(options...)
 	return &Logger{cloned, cloned.Sugar()}
+}
+
+// ToBuffer makes the logger log to the provided buffer b.
+func ToBuffer(b *bytes.Buffer) LogOption {
+	return zap.WrapCore(func(core zapcore.Core) zapcore.Core {
+		encoderConfig := zap.NewProductionEncoderConfig()
+		encoder := zapcore.NewJSONEncoder(encoderConfig)
+		writeSyncer := zapcore.AddSync(b)
+
+		return zapcore.NewCore(encoder, writeSyncer, zapcore.DebugLevel)
+	})
 }
 
 // With creates a child logger and adds structured context to it. Fields added
