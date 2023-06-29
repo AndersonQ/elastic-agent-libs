@@ -165,6 +165,21 @@ func (m M) Clone() M {
 	return result
 }
 
+// BetterClone receives result, a pre allocated M, and recursively copies itself
+// to result. Usage:
+//
+//	result := make(M, len(m))
+//	m.BetterClone(result)
+func (m M) BetterClone(result M) {
+	for k := range m {
+		if innerMap, ok := tryToMapStr(m[k]); ok {
+			result[k] = innerMap.Clone()
+		} else {
+			result[k] = m[k]
+		}
+	}
+}
+
 // HasKey returns true if the key exist. If an error occurs then false is
 // returned with a non-nil error.
 func (m M) HasKey(key string) (bool, error) {
