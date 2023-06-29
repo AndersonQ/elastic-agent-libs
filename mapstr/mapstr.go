@@ -122,14 +122,34 @@ func deepUpdateValue(old interface{}, val M, overwrite bool) interface{} {
 	}
 }
 
-// Delete deletes the given key from the map.
-func (m M) Delete(key string) error {
+// canDelete checks if a Put can be performed, if it can it returns all necessary
+// // data and a nil error.
+func (m M) canDelete(key string) (subKey string, subMap M, err error) {
 	k, d, _, found, err := mapFind(key, m, false)
 	if err != nil {
+		return "", nil, err
+	}
+
+	if !found {
+		return "", nil, ErrKeyNotFound
+	}
+
+	return k, d, nil
+}
+
+// DryDelete performs a dry run of Delete.
+func (m M) DryDelete(key string) error {
+	if _, _, err := m.canDelete(key); err != nil {
 		return err
 	}
-	if !found {
-		return ErrKeyNotFound
+	return nil
+}
+
+// Delete deletes the given key from the map.
+func (m M) Delete(key string) error {
+	k, d, err := m.canDelete(key)
+	if err != nil {
+		return nil
 	}
 
 	delete(d, k)
@@ -165,23 +185,6 @@ func (m M) Clone() M {
 	return result
 }
 
-// BetterClone receives result, a pre allocated M, and recursively copies itself
-// to result. Usage:
-//
-//	result := make(M, len(m))
-//	m.BetterClone(result)
-func (m M) BetterClone(result M) {
-	for k := range m {
-		if innerMap, ok := tryToMapStr(m[k]); ok {
-			clone := make(M, len(innerMap))
-			innerMap.BetterClone(clone)
-			result[k] = clone
-		} else {
-			result[k] = m[k]
-		}
-	}
-}
-
 // HasKey returns true if the key exist. If an error occurs then false is
 // returned with a non-nil error.
 func (m M) HasKey(key string) (bool, error) {
@@ -202,6 +205,23 @@ func (m M) GetValue(key string) (interface{}, error) {
 	return v, nil
 }
 
+// canPut checks if a Put can be performed, if it can it returns all necessary
+// data and a nil error.
+func (m M) canPut(key string) (subKey string, subMap M, oldValue interface{}, present bool, err error) {
+	return mapFind(key, m, true)
+}
+
+// DryPut performs a dry run of Put.
+func (m M) DryPut(key string) error {
+	// XXX `safemapstr.Put` mimics this implementation, both should be updated to have similar behavior
+	_, _, _, _, err := mapFind(key, m, true)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // Put associates the specified value with the specified key. If the map
 // previously contained a mapping for the key, the old value is replaced and
 // returned. The key can be expressed in dot-notation (e.g. x.y) to put a value
@@ -211,7 +231,7 @@ func (m M) GetValue(key string) (interface{}, error) {
 // to insert values (e.g. m[key] = value).
 func (m M) Put(key string, value interface{}) (interface{}, error) {
 	// XXX `safemapstr.Put` mimics this implementation, both should be updated to have similar behavior
-	k, d, old, _, err := mapFind(key, m, true)
+	k, d, old, _, err := m.canPut(key)
 	if err != nil {
 		return nil, err
 	}
