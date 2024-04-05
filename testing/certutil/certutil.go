@@ -212,3 +212,173 @@ func NewRootAndChildCerts() (Pair, Pair, error) {
 
 	return rootPair, childPair, nil
 }
+
+func NewCA() (CA, error) {
+	rootKey, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		return CA{}, fmt.Errorf("could not create private key: %w", err)
+	}
+
+	notBefore := time.Now()
+	notAfter := notBefore.Add(24 * 7 * time.Hour)
+
+	rootTemplate := x509.Certificate{
+		DNSNames:     []string{"localhost"},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		SerialNumber: big.NewInt(1653),
+		Subject: pkix.Name{
+			Organization: []string{"Gallifrey"},
+			CommonName:   "localhost",
+		},
+		NotBefore:             notBefore,
+		NotAfter:              notAfter,
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+
+	rootCertRawBytes, err := x509.CreateCertificate(
+		rand.Reader, &rootTemplate, &rootTemplate, &rootKey.PublicKey, rootKey)
+	if err != nil {
+		return CA{}, fmt.Errorf("could not create CA: %w", err)
+	}
+
+	rootPrivKeyDER, err := x509.MarshalECPrivateKey(rootKey)
+	if err != nil {
+		return CA{}, fmt.Errorf("could not marshal private key: %w", err)
+	}
+
+	// PEM private key
+	var rootPrivBytesOut []byte
+	rootPrivateKeyBuff := bytes.NewBuffer(rootPrivBytesOut)
+	err = pem.Encode(rootPrivateKeyBuff, &pem.Block{
+		Type: "EC PRIVATE KEY", Bytes: rootPrivKeyDER})
+	if err != nil {
+		return CA{}, fmt.Errorf("could not pem.Encode private key: %w", err)
+	}
+
+	// PEM certificate
+	var rootCertBytesOut []byte
+	rootCertPemBuff := bytes.NewBuffer(rootCertBytesOut)
+	err = pem.Encode(rootCertPemBuff, &pem.Block{
+		Type: "CERTIFICATE", Bytes: rootCertRawBytes})
+	if err != nil {
+		return CA{}, fmt.Errorf("could not pem.Encode certificate: %w", err)
+	}
+
+	// tls.Certificate
+	rootTLSCert, err := tls.X509KeyPair(
+		rootCertPemBuff.Bytes(), rootPrivateKeyBuff.Bytes())
+	if err != nil {
+		return CA{}, fmt.Errorf("could not create key pair: %w", err)
+	}
+
+	rootCACert, err := x509.ParseCertificate(rootTLSCert.Certificate[0])
+	if err != nil {
+		return CA{}, fmt.Errorf("could not parse certificate: %w", err)
+	}
+
+	return CA{
+		PrivKey: rootKey,
+		Cert:    rootCACert,
+		Pair: Pair{
+			Cert: rootCertPemBuff.Bytes(),
+			Key:  rootPrivateKeyBuff.Bytes(),
+		},
+	}, nil
+}
+
+func (ca CA) GenerateFromCSR(
+	csr x509.CertificateRequest,
+	pubKey any) ([]byte, error) {
+	notBefore := time.Now()
+	notAfter := notBefore.Add(24 * 7 * time.Hour)
+
+	certTemplate := &x509.Certificate{
+		DNSNames:       csr.DNSNames,
+		IPAddresses:    csr.IPAddresses,
+		Subject:        csr.Subject,
+		EmailAddresses: csr.EmailAddresses,
+
+		SerialNumber: big.NewInt(31416),
+		NotBefore:    notBefore,
+		NotAfter:     notAfter,
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{
+			x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+	}
+
+	certDERBytes, err := x509.CreateCertificate(
+		rand.Reader, certTemplate, ca.Cert, pubKey, ca.PrivKey)
+	if err != nil {
+		return nil, fmt.Errorf("could not create certificate from CSR: %w", err)
+	}
+
+	return certDERBytes, nil
+}
+
+type CA struct {
+	PrivKey *ecdsa.PrivateKey
+	Cert    *x509.Certificate
+	Pair    Pair
+}
+
+func NewCAAndCerts() (Pair, Pair, error) {
+	ca, err := NewCA()
+	if err != nil {
+		return Pair{}, Pair{}, fmt.Errorf("could not generate root CA: %w", err)
+	}
+
+	privateKey, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		return Pair{}, Pair{}, fmt.Errorf("could not create private key: %w", err)
+	}
+
+	csr := x509.CertificateRequest{
+		// RawSubjectPublicKeyInfo: pubKeyDERBytes,
+		Subject: pkix.Name{
+			CommonName:         "Temporal Proxy",
+			Country:            []string{"Gallifrey"},
+			Province:           []string{"Time Proxy"},
+			Locality:           []string{"TARDIS"},
+			Organization:       []string{"Time Lords"},
+			OrganizationalUnit: []string{"Temporal Mechanics", "Proxy"},
+		},
+		DNSNames:       []string{"localhost"},
+		EmailAddresses: []string{"temporal.proxy@time-lords.time"},
+		IPAddresses:    []net.IP{net.ParseIP("127.0.0.1")},
+	}
+
+	certDERBytes, err := ca.GenerateFromCSR(csr, &privateKey.PublicKey)
+	if err != nil {
+		return Pair{}, Pair{}, fmt.Errorf("could not GenerateFromCSR: %w", err)
+	}
+
+	privateKeyDER, err := x509.MarshalECPrivateKey(privateKey)
+	if err != nil {
+		return Pair{}, Pair{}, fmt.Errorf("could not marshal private key: %w", err)
+	}
+
+	// PEM private key
+	var privBytesOut []byte
+	privateKeyBuff := bytes.NewBuffer(privBytesOut)
+	err = pem.Encode(privateKeyBuff, &pem.Block{
+		Type: "EC PRIVATE KEY", Bytes: privateKeyDER})
+	if err != nil {
+		return Pair{}, Pair{}, fmt.Errorf("could not pem.Encode private key: %w", err)
+	}
+
+	// PEM certificate
+	var certBytesOut []byte
+	certBuff := bytes.NewBuffer(certBytesOut)
+	err = pem.Encode(certBuff, &pem.Block{
+		Type: "CERTIFICATE", Bytes: certDERBytes})
+	if err != nil {
+		return Pair{}, Pair{}, fmt.Errorf("could not pem.Encode certificate: %w", err)
+	}
+
+	return ca.Pair, Pair{
+		Cert: certBuff.Bytes(),
+		Key:  privateKeyBuff.Bytes(),
+	}, nil
+}

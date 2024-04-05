@@ -18,9 +18,15 @@
 package main
 
 import (
+	"bytes"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"net"
@@ -59,27 +65,68 @@ func main() {
 		netIPs = append(netIPs, net.ParseIP(ip))
 	}
 
-	var rootCert *x509.Certificate
-	var rootKey crypto.PrivateKey
+	var ca certutil.CA
 	var err error
-	if caPath == "" && caKeyPath == "" {
-		var pair certutil.Pair
-		rootKey, rootCert, pair, err = certutil.NewRootCA()
-		if err != nil {
-			panic(fmt.Errorf("could not create root CA certificate: %w", err))
-		}
-
-		savePair(dest, "ca", pair)
-	} else {
-		rootKey, rootCert = loadCA(caPath, caKeyPath)
-	}
-
-	_, childPair, err := certutil.GenerateChildCert(name, netIPs, rootKey, rootCert)
+	// if caPath == "" && caKeyPath == "" {
+	ca, err = certutil.NewCA()
 	if err != nil {
-		panic(fmt.Errorf("error generating child certificate: %w", err))
+		panic(fmt.Errorf("could not create root CA certificate: %w", err))
 	}
 
-	savePair(dest, name, childPair)
+	savePair(dest, "ca", ca.Pair)
+	// }
+
+	privateKey, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		panic(fmt.Errorf("could not create private key: %w", err))
+	}
+
+	csr := x509.CertificateRequest{
+		// RawSubjectPublicKeyInfo: pubKeyDERBytes,
+		Subject: pkix.Name{
+			CommonName:         "Temporal Proxy",
+			Country:            []string{"Gallifrey"},
+			Province:           []string{"Time Proxy"},
+			Locality:           []string{"TARDIS"},
+			Organization:       []string{"Time Lords"},
+			OrganizationalUnit: []string{"Temporal Mechanics", "Proxy"},
+		},
+		DNSNames:       []string{name},
+		EmailAddresses: []string{"temporal.proxy@time-lords.time"},
+		IPAddresses:    netIPs,
+	}
+	certDERBytes, err := ca.GenerateFromCSR(csr, &privateKey.PublicKey)
+	if err != nil {
+		panic(fmt.Errorf("could not GenerateFromCSR: %w", err))
+	}
+
+	privateKeyDER, err := x509.MarshalECPrivateKey(privateKey)
+	if err != nil {
+		panic(fmt.Errorf("could not marshal private key: %w", err))
+	}
+
+	// PEM private key
+	var privBytesOut []byte
+	privateKeyBuff := bytes.NewBuffer(privBytesOut)
+	err = pem.Encode(privateKeyBuff, &pem.Block{
+		Type: "EC PRIVATE KEY", Bytes: privateKeyDER})
+	if err != nil {
+		panic(fmt.Errorf("could not pem.Encode private key: %w", err))
+	}
+
+	// PEM certificate
+	var certBytesOut []byte
+	certBuff := bytes.NewBuffer(certBytesOut)
+	err = pem.Encode(certBuff, &pem.Block{
+		Type: "CERTIFICATE", Bytes: certDERBytes})
+	if err != nil {
+		panic(fmt.Errorf("could not pem.Encode certificate: %w", err))
+	}
+
+	savePair(dest, name, certutil.Pair{
+		Cert: certBuff.Bytes(),
+		Key:  privateKeyBuff.Bytes(),
+	})
 }
 
 func loadCA(caPath string, keyPath string) (crypto.PrivateKey, *x509.Certificate) {
