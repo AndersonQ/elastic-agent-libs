@@ -327,7 +327,7 @@ type CA struct {
 // TODO:
 // dnsname will be added to the child certificate DNSNames in addition to
 // "localhost", which is added bu default.
-func NewCAAndCerts(dnsnames ...string) (Pair, Pair, error) {
+func NewCAAndCerts(ips []net.IP, dnsnames ...string) (Pair, Pair, error) {
 	ca, err := NewCA()
 	if err != nil {
 		return Pair{}, Pair{}, fmt.Errorf("could not generate root CA: %w", err)
@@ -348,9 +348,9 @@ func NewCAAndCerts(dnsnames ...string) (Pair, Pair, error) {
 			Organization:       []string{"Time Lords"},
 			OrganizationalUnit: []string{"Temporal Mechanics", "Proxy"},
 		},
-		DNSNames:       append(dnsnames,"localhost"),
+		DNSNames:       append(dnsnames, "localhost"),
 		EmailAddresses: []string{"temporal.proxy@time-lords.time"},
-		IPAddresses:    []net.IP{net.ParseIP("127.0.0.1")},
+		IPAddresses:    append(ips, net.ParseIP("127.0.0.1")),
 	}
 
 	certDERBytes, err := ca.GenerateFromCSR(csr, &privateKey.PublicKey)
