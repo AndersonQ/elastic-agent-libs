@@ -26,7 +26,6 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/pem"
 	"flag"
 	"fmt"
 	"net"
@@ -110,26 +109,10 @@ func main() {
 		panic(fmt.Errorf("error writing passphrase file: %w", err))
 	}
 
-	key, err := x509.MarshalPKCS8PrivateKey(childCert.PrivateKey)
+	certKeyEnc, err := certutil.EncryptKey(childCert, pass)
 	if err != nil {
-		panic(fmt.Errorf("error getting ecdh.PrivateKey from the child's private key: %w", err))
+		panic(err)
 	}
-
-	blockType := "EC PRIVATE KEY"
-	if rsaflag {
-		blockType = "RSA PRIVATE KEY"
-	}
-	encPem, err := x509.EncryptPEMBlock( //nolint:staticcheck // we need to drop support for this, but while we don't, it needs to be tested.
-		rand.Reader,
-		blockType,
-		key,
-		[]byte(pass),
-		x509.PEMCipherAES128)
-	if err != nil {
-		panic(fmt.Errorf("failed encrypting agent child certificate key block: %v", err))
-	}
-
-	certKeyEnc := pem.EncodeToMemory(encPem)
 
 	err = os.WriteFile(filepath.Join(dest, filePrefix+name+"_enc-key.pem"), certKeyEnc, 0o600)
 	if err != nil {
