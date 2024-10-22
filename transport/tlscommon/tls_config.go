@@ -23,9 +23,12 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/elastic/elastic-agent-libs/logp"
@@ -113,7 +116,7 @@ func (c *TLSConfig) ToConfig() *tls.Config {
 		Certificates:       c.Certificates,
 		RootCAs:            c.RootCAs,
 		ClientCAs:          c.ClientCAs,
-		InsecureSkipVerify: insecure, //nolint: gosec // we are using our own verification for now
+		InsecureSkipVerify: insecure, // nolint: gosec // we are using our own verification for now
 		CipherSuites:       convCipherSuites(c.CipherSuites),
 		CurvePreferences:   c.CurvePreferences,
 		Renegotiation:      c.Renegotiation,
@@ -129,7 +132,7 @@ func (c *TLSConfig) BuildModuleClientConfig(host string) *tls.Config {
 		// use default TLS settings, if config is empty.
 		return &tls.Config{
 			ServerName:         host,
-			InsecureSkipVerify: true, //nolint: gosec // we are using our own verification for now
+			InsecureSkipVerify: true, // nolint: gosec // we are using our own verification for now
 			VerifyConnection: makeVerifyConnection(&TLSConfig{
 				Verification: VerifyFull,
 				ServerName:   host,
@@ -160,7 +163,7 @@ func (c *TLSConfig) BuildServerConfig(host string) *tls.Config {
 		// use default TLS settings, if config is empty.
 		return &tls.Config{
 			ServerName:         host,
-			InsecureSkipVerify: true, //nolint: gosec // we are using our own verification for now
+			InsecureSkipVerify: true, // nolint: gosec // we are using our own verification for now
 			VerifyConnection: makeVerifyServerConnection(&TLSConfig{
 				Verification: VerifyFull,
 				ServerName:   host,
@@ -284,12 +287,32 @@ func makeVerifyConnection(cfg *TLSConfig) func(tls.ConnectionState) error {
 }
 
 func makeVerifyServerConnection(cfg *TLSConfig) func(tls.ConnectionState) error {
+	bs, err := json.Marshal(cfg)
+	if err != nil {
+		logp.L().Infow("makeVerifyServerConnection cfg to json failed, loggign go struct", "cfg", cfg)
+	} else {
+		logp.L().Infow("makeVerifyServerConnection cfg", "cfg", string(bs))
+
+	}
 	switch cfg.Verification {
 	case VerifyFull:
 		return func(cs tls.ConnectionState) error {
+			fmt.Printf("makeVerifyServerConnection: VerifyFull ConnectionState.ServerName: %s\n", cs.ServerName)
+			cert := cs.PeerCertificates[0]
+			sb := strings.Builder{}
+			err := pem.Encode(&sb, &pem.Block{
+				Type:  "BEGIN CERTIFICATE",
+				Bytes: cert.Raw,
+			})
+			if err != nil {
+				fmt.Printf("makeVerifyServerConnection: VerifyFull cs.PeerCertificates[0] to json failes, printin raw certificate: %s\n", string(cert.Raw))
+			} else {
+				fmt.Printf("makeVerifyServerConnection: VerifyFull cs.PeerCertificates[0]: %s\n", string(bs))
+			}
+
 			if len(cs.PeerCertificates) == 0 {
 				if cfg.ClientAuth == tls.RequireAndVerifyClientCert {
-					return ErrMissingPeerCertificate
+					return fmt.Errorf("makeVerifyServerConnection: VerifyFull: %w", ErrMissingPeerCertificate)
 				}
 				return nil
 			}
@@ -299,14 +322,15 @@ func makeVerifyServerConnection(cfg *TLSConfig) func(tls.ConnectionState) error 
 				Intermediates: x509.NewCertPool(),
 				KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
 			}
-			err := verifyCertsWithOpts(cs.PeerCertificates, cfg.CASha256, opts)
+			err = verifyCertsWithOpts(cs.PeerCertificates, cfg.CASha256, opts)
 			if err != nil {
-				return err
+				return fmt.Errorf("makeVerifyServerConnection: VerifyFull: verifyCertsWithOpts: %w", ErrMissingPeerCertificate)
 			}
 			return verifyHostname(cs.PeerCertificates[0], cs.ServerName)
 		}
 	case VerifyCertificate:
 		return func(cs tls.ConnectionState) error {
+			fmt.Printf("makeVerifyServerConnection: VerifyCertificate ConnectionState.ServerName: %s\n", cs.ServerName)
 			if len(cs.PeerCertificates) == 0 {
 				if cfg.ClientAuth == tls.RequireAndVerifyClientCert {
 					return ErrMissingPeerCertificate
@@ -324,6 +348,7 @@ func makeVerifyServerConnection(cfg *TLSConfig) func(tls.ConnectionState) error 
 	case VerifyStrict:
 		if len(cfg.CASha256) > 0 {
 			return func(cs tls.ConnectionState) error {
+				fmt.Printf("makeVerifyServerConnection: VerifyStrict ConnectionState.ServerName: %s\n", cs.ServerName)
 				return verifyCAPin(cfg.CASha256, cs.VerifiedChains)
 			}
 		}
@@ -340,7 +365,7 @@ func verifyCertsWithOpts(certs []*x509.Certificate, casha256 []string, opts x509
 	}
 	verifiedChains, err := certs[0].Verify(opts)
 	if err != nil {
-		return err
+		return fmt.Errorf("verifyCertsWithOpts: certs[0].Verify: %w", err)
 	}
 
 	if len(casha256) > 0 {
@@ -394,5 +419,16 @@ func verifyHostname(cert *x509.Certificate, hostname string) error {
 			return nil
 		}
 	}
-	return x509.HostnameError{Certificate: cert, Host: hostname}
+
+	sb := strings.Builder{}
+	err := pem.Encode(&sb, &pem.Block{
+		Type:  "BEGIN CERTIFICATE",
+		Bytes: cert.Raw,
+	})
+	if err != nil {
+		return errors.Join(x509.HostnameError{Certificate: cert, Host: hostname}, fmt.Errorf("failed encoding certificate in PEM"))
+	}
+	return fmt.Errorf("verifyHostname failed: cert: %q. %w",
+		sb.String(),
+		x509.HostnameError{Certificate: cert, Host: hostname})
 }
